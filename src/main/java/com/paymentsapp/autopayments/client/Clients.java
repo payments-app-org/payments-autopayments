@@ -88,6 +88,41 @@ public class Clients {
         }
     }
 
+    // «Ваш счёт в другом банке»: счёт-источник пополнения по СБП в account (находит или заводит)
+    public Account sbpSource(UUID userId, String bankId, String bankName) {
+        try {
+            return account.post().uri("/api/users/{id}/sbp-sources", userId)
+                    .body(Map.of("bankId", bankId, "bankName", bankName)).retrieve().body(Account.class);
+        } catch (HttpClientErrorException e) {
+            throw ApiException.badRequest(detail(e, "Выберите банк"));
+        }
+    }
+
+    // Котировка перевода между своими счетами (автопополнение)
+    public Quote quoteOwn(UUID userId, UUID sourceId, UUID destinationId, BigDecimal amount) {
+        try {
+            return pricing.post().uri("/api/pricing/commission")
+                    .body(Map.of("userId", userId, "sourceAccountId", sourceId, "operationType", "OWN_TRANSFER",
+                            "amount", amount, "destinationAccountId", destinationId))
+                    .retrieve().body(Quote.class);
+        } catch (HttpClientErrorException e) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, detail(e, "Такое пополнение недоступно"));
+        }
+    }
+
+    public PaymentResult payOwn(UUID userId, String idempotencyKey, UUID sourceId, UUID destinationId, BigDecimal amount,
+                                String quoteToken) {
+        try {
+            return payment.post().uri("/api/payments")
+                    .header("X-User-Id", userId.toString()).header("X-Idempotency-Key", idempotencyKey)
+                    .body(Map.of("type", "OWN_TRANSFER", "sourceAccountId", sourceId, "destinationAccountId", destinationId,
+                            "amount", amount, "quoteToken", quoteToken))
+                    .retrieve().body(PaymentResult.class);
+        } catch (HttpClientErrorException e) {
+            return new PaymentResult(null, "REJECTED", null, null, detail(e, "Перевод отклонён"));
+        }
+    }
+
     private String detail(HttpClientErrorException e, String fallback) {
         try {
             return json.readTree(e.getResponseBodyAsString()).path("detail").asString(fallback);
@@ -96,10 +131,16 @@ public class Clients {
         }
     }
 
-    public record Account(UUID id, String type, String status, String title, String cardLast4) {
+    public record Account(UUID id, String type, String status, String title, String cardLast4, BigDecimal available) {
 
+        // Кошелёк или карта нашего банка
         public boolean usable() {
-            return "ACTIVE".equals(status) && !"EXTERNAL_CARD".equals(type);
+            return "ACTIVE".equals(status) && ("WALLET".equals(type) || "CARD".equals(type));
+        }
+
+        // «Зарплатная WEEKEND ·· 3752»
+        public String displayTitle() {
+            return title + (cardLast4 == null ? "" : " ·· " + cardLast4);
         }
     }
 

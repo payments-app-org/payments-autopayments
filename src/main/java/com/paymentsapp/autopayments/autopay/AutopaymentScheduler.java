@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-// Раз в interval ищет автоплатежи, у которых наступил день, и проводит их
+// Раз в interval ищет автоплатежи, у которых наступил день, и автопополнения, которым пора сработать
 @Component
 public class AutopaymentScheduler {
 
@@ -16,11 +16,17 @@ public class AutopaymentScheduler {
     private final AutopaymentRepository repo;
     private final AutopaymentExecutor executor;
     private final AutopaymentService service;
+    private final com.paymentsapp.autopayments.topup.TopupRepository topups;
+    private final com.paymentsapp.autopayments.topup.TopupExecutor topupExecutor;
 
-    public AutopaymentScheduler(AutopaymentRepository repo, AutopaymentExecutor executor, AutopaymentService service) {
+    public AutopaymentScheduler(AutopaymentRepository repo, AutopaymentExecutor executor, AutopaymentService service,
+                                com.paymentsapp.autopayments.topup.TopupRepository topups,
+                                com.paymentsapp.autopayments.topup.TopupExecutor topupExecutor) {
         this.repo = repo;
         this.executor = executor;
         this.service = service;
+        this.topups = topups;
+        this.topupExecutor = topupExecutor;
     }
 
     @Scheduled(fixedDelayString = "${autopay.interval}", initialDelayString = "10s")
@@ -31,6 +37,15 @@ public class AutopaymentScheduler {
                 executor.run(id, today);
             } catch (RuntimeException e) {
                 log.warn("автоплатёж {}: запуск не удался: {}", id, e.getMessage());
+            }
+        }
+        // Автопополнения: по дате и по балансу счёта зачисления
+        java.time.OffsetDateTime now = java.time.OffsetDateTime.now();
+        for (UUID id : topups.due(today, now)) {
+            try {
+                topupExecutor.run(id, today, now);
+            } catch (RuntimeException e) {
+                log.warn("автопополнение {}: запуск не удался: {}", id, e.getMessage());
             }
         }
     }

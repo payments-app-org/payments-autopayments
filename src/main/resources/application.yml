@@ -40,6 +40,9 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      # Redis недоступен — отказ за секунды (кэш идёт мимо, readiness — DOWN), а не ожидание по минуте
+      connect-timeout: 1s
+      timeout: 2s
       # Репозитории Spring Data на Redis не нужны
       repositories:
         enabled: false
@@ -123,6 +126,33 @@ resilience4j:
 
 # Общая библиотека libs/platform
 platform:
+  # Swagger: описание API и коды ошибок в схеме Problem
+  openapi:
+    description: "Шаблоны платежей, автоплатежи и автопополнения"
+    error-codes: com.paymentsapp.autopayments.error.AutopaymentsError
   # День автоплатежа и месяц лимита считаем по московскому времени
   time:
     zone: Europe/Moscow
+
+# Actuator: /actuator/health — liveness (процесс жив) и readiness (готов принимать запросы: есть БД и Redis);
+# по ним healthcheck в compose и пробы Kubernetes. Остановка — плавная (по умолчанию в Spring Boot): новые запросы
+# не принимаем, текущие дорабатывают
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,redis
+
+springdoc:
+  # Swagger UI и спецификация включены; в проде можно выключить: SWAGGER_ENABLED=false
+  api-docs:
+    enabled: ${SWAGGER_ENABLED:true}
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:true}

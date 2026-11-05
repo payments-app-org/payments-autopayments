@@ -1,9 +1,9 @@
 package com.paymentsapp.autopayments.autopay;
 
-import java.time.Clock;
 import com.paymentsapp.autopayments.template.Target;
 import com.paymentsapp.autopayments.web.ApiException;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;

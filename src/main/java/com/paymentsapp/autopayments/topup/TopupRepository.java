@@ -1,5 +1,6 @@
 package com.paymentsapp.autopayments.topup;
 
+import java.time.Clock;
 import com.paymentsapp.autopayments.topup.Topup.Run;
 import com.paymentsapp.autopayments.web.ApiException;
 import java.math.BigDecimal;
@@ -7,11 +8,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -27,15 +26,15 @@ public class TopupRepository {
             """;
 
     private final JdbcClient jdbc;
-    private final ZoneId zone;
+    private final Clock clock;
 
-    public TopupRepository(JdbcClient jdbc, @Value("${autopay.zone}") String zone) {
+    public TopupRepository(JdbcClient jdbc, Clock clock) {
         this.jdbc = jdbc;
-        this.zone = ZoneId.of(zone);
+        this.clock = clock;
     }
 
     private OffsetDateTime monthStart() {
-        return LocalDate.now(zone).withDayOfMonth(1).atStartOfDay(zone).toOffsetDateTime();
+        return LocalDate.now(clock).withDayOfMonth(1).atStartOfDay(clock.getZone()).toOffsetDateTime();
     }
 
     public List<Topup> list(UUID userId) {

@@ -1,15 +1,14 @@
 package com.paymentsapp.autopayments.autopay;
 
+import java.time.Clock;
 import com.paymentsapp.autopayments.template.Target;
 import com.paymentsapp.autopayments.web.ApiException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
@@ -21,19 +20,19 @@ public class AutopaymentService {
     private final JsonMapper json;
     private final Target target;
     private final AutopaymentRepository repo;
-    private final ZoneId zone;
+    private final Clock clock;
 
     public AutopaymentService(JdbcClient jdbc, JsonMapper json, Target target, AutopaymentRepository repo,
-                              @Value("${autopay.zone}") String zone) {
+                              Clock clock) {
         this.jdbc = jdbc;
         this.json = json;
         this.target = target;
         this.repo = repo;
-        this.zone = ZoneId.of(zone);
+        this.clock = clock;
     }
 
     public LocalDate today() {
-        return LocalDate.now(zone);
+        return LocalDate.now(clock);
     }
 
     public List<Autopayment> list(UUID userId) {

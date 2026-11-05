@@ -1,15 +1,14 @@
 package com.paymentsapp.autopayments.topup;
 
+import java.time.Clock;
 import com.paymentsapp.autopayments.autopay.Schedule;
 import com.paymentsapp.autopayments.client.Clients;
 import com.paymentsapp.autopayments.web.ApiException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
@@ -21,13 +20,13 @@ public class TopupService {
     private final JdbcClient jdbc;
     private final Clients clients;
     private final TopupRepository repo;
-    private final ZoneId zone;
+    private final Clock clock;
 
-    public TopupService(JdbcClient jdbc, Clients clients, TopupRepository repo, @Value("${autopay.zone}") String zone) {
+    public TopupService(JdbcClient jdbc, Clients clients, TopupRepository repo, Clock clock) {
         this.jdbc = jdbc;
         this.clients = clients;
         this.repo = repo;
-        this.zone = ZoneId.of(zone);
+        this.clock = clock;
     }
 
     public List<Topup> list(UUID userId) {
@@ -61,7 +60,7 @@ public class TopupService {
             throw ApiException.badRequest("Счёт списания и счёт зачисления должны отличаться");
         }
 
-        LocalDate today = LocalDate.now(zone);
+        LocalDate today = LocalDate.now(clock);
         LocalDate nextRun = null;
         switch (req.kind() == null ? "" : req.kind()) {
             case "MONTHLY" -> {
@@ -115,7 +114,7 @@ public class TopupService {
         if (!"ACTIVE".equals(status) && !"PAUSED".equals(status)) {
             throw ApiException.badRequest("Статус — ACTIVE или PAUSED");
         }
-        LocalDate today = LocalDate.now(zone);
+        LocalDate today = LocalDate.now(clock);
         LocalDate next = t.nextRunDate();
         if ("ACTIVE".equals(status) && "MONTHLY".equals(t.kind()) && next.isBefore(today)) {
             next = Schedule.of("MONTHLY", t.dayOfMonth(), null, null, today).nextOnOrAfter(today);

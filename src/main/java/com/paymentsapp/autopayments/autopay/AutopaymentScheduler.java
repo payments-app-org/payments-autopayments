@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -29,7 +30,9 @@ public class AutopaymentScheduler {
         this.topupExecutor = topupExecutor;
     }
 
-    @Scheduled(fixedDelayString = "${autopay.interval}", initialDelayString = "10s")
+    // При нескольких подах тик выполняет один (ShedLock): автопополнение не сработает дважды
+    @Scheduled(fixedDelayString = "${autopay.interval}", initialDelayString = "${autopay.initial-delay}")
+    @SchedulerLock(name = "autopayments-tick")
     public void tick() {
         LocalDate today = service.today();
         for (UUID id : repo.due(today)) {

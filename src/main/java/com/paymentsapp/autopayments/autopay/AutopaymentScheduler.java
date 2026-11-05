@@ -1,54 +1,70 @@
 package com.paymentsapp.autopayments.autopay;
 
+import com.paymentsapp.autopayments.config.AutopayProperties;
+import com.paymentsapp.autopayments.topup.TopupExecutor;
+import com.paymentsapp.autopayments.topup.TopupRepository;
+import java.time.Clock;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-// Раз в interval ищет автоплатежи, у которых наступил день, и автопополнения, которым пора сработать
+// Раз в interval: автоплатежи, у которых наступил день, и автопополнения, которым пора сработать.
+// Каждый под забирает свою пачку (бронь в БД, FOR UPDATE SKIP LOCKED) и проводит её параллельно,
+// не больше autopay.parallelism одновременно. Несколько подов делят работу, а не дублируют.
 @Component
 public class AutopaymentScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(AutopaymentScheduler.class);
+    private static final String AUTOPAYMENT = "автоплатёж";
+    private static final String TOPUP = "автопополнение";
 
-    private final AutopaymentRepository repo;
+    private final AutopaymentRepository autopayments;
     private final AutopaymentExecutor executor;
-    private final AutopaymentService service;
-    private final com.paymentsapp.autopayments.topup.TopupRepository topups;
-    private final com.paymentsapp.autopayments.topup.TopupExecutor topupExecutor;
+    private final TopupRepository topups;
+    private final TopupExecutor topupExecutor;
+    private final AutopayProperties props;
+    private final Clock clock;
 
-    public AutopaymentScheduler(AutopaymentRepository repo, AutopaymentExecutor executor, AutopaymentService service,
-                                com.paymentsapp.autopayments.topup.TopupRepository topups,
-                                com.paymentsapp.autopayments.topup.TopupExecutor topupExecutor) {
-        this.repo = repo;
+    public AutopaymentScheduler(AutopaymentRepository autopayments, AutopaymentExecutor executor, TopupRepository topups,
+                                TopupExecutor topupExecutor, AutopayProperties props, Clock clock) {
+        this.autopayments = autopayments;
         this.executor = executor;
-        this.service = service;
         this.topups = topups;
         this.topupExecutor = topupExecutor;
+        this.props = props;
+        this.clock = clock;
     }
 
-    // При нескольких подах тик выполняет один (ShedLock): автопополнение не сработает дважды
     @Scheduled(fixedDelayString = "${autopay.interval}", initialDelayString = "${autopay.initial-delay}")
-    @SchedulerLock(name = "autopayments-tick")
     public void tick() {
-        LocalDate today = service.today();
-        for (UUID id : repo.due(today)) {
-            try {
-                executor.run(id, today);
-            } catch (RuntimeException e) {
-                log.warn("автоплатёж {}: запуск не удался: {}", id, e.getMessage());
-            }
+        LocalDate today = LocalDate.now(clock);
+        OffsetDateTime now = OffsetDateTime.now(clock);
+        runAll(autopayments.claimDue(today, now), id -> executor.run(id, today), AUTOPAYMENT);
+        runAll(topups.claimDue(today, now), id -> topupExecutor.run(id, today, now), TOPUP);
+    }
+
+    private void runAll(List<UUID> ids, Consumer<UUID> task, String what) {
+        if (ids.isEmpty()) {
+            return;
         }
-        // Автопополнения: по дате и по балансу счёта зачисления
-        java.time.OffsetDateTime now = java.time.OffsetDateTime.now();
-        for (UUID id : topups.due(today, now)) {
-            try {
-                topupExecutor.run(id, today, now);
-            } catch (RuntimeException e) {
-                log.warn("автопополнение {}: запуск не удался: {}", id, e.getMessage());
+        // close() дожидается всех задач пачки
+        try (ExecutorService pool = Executors.newFixedThreadPool(props.parallelism(), Thread.ofVirtual().factory())) {
+            for (UUID id : ids) {
+                pool.submit(() -> {
+                    try {
+                        task.accept(id);
+                    } catch (RuntimeException e) {
+                        log.warn("{} {}: запуск не удался: {}", what, id, e.getMessage());
+                    }
+                });
             }
         }
     }

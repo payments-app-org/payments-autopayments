@@ -9,6 +9,25 @@ spring:
     clients:
       connect-timeout: ${HTTP_CONNECT_TIMEOUT:1s}
       read-timeout: ${HTTP_READ_TIMEOUT:5s}
+    # Соседи: тайм-ауты по группам HTTP-интерфейсов (client/*Api)
+    serviceclient:
+      account:
+        base-url: ${ACCOUNT_URL:http://localhost:8081}
+        connect-timeout: 1s
+        read-timeout: 3s
+      biller:
+        base-url: ${BILLER_URL:http://localhost:8087}
+        connect-timeout: 1s
+        read-timeout: 5s
+      pricing:
+        base-url: ${PRICING_URL:http://localhost:8082}
+        connect-timeout: 1s
+        read-timeout: 3s
+      # Сага платежа идёт внутри запроса (резерв, антифрод, процессинг) — ждём дольше
+      payment:
+        base-url: ${PAYMENT_URL:http://localhost:8083}
+        connect-timeout: 1s
+        read-timeout: 20s
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/payments}
     username: ${DB_USER:payments}
@@ -16,12 +35,12 @@ spring:
     # search_path соединения — своя схема (создаётся в infra/postgres/init.sql)
     hikari:
       schema: autopayments
-  # Redis: блокировки планировщиков (ShedLock), кэш
+  # Redis: блокировки планировщиков платформы (ShedLock)
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      # Redis — только для кэша и блокировок, репозитории Spring Data на нём не нужны
+      # Репозитории Spring Data на Redis не нужны
       repositories:
         enabled: false
   liquibase:
@@ -29,24 +48,81 @@ spring:
     default-schema: autopayments
     liquibase-schema: autopayments
 
-clients:
-  account:
-    url: ${ACCOUNT_URL:http://localhost:8081}
-  pricing:
-    url: ${PRICING_URL:http://localhost:8082}
-  payment:
-    url: ${PAYMENT_URL:http://localhost:8083}
-  biller:
-    url: ${BILLER_URL:http://localhost:8087}
-
 autopay:
-  # Как часто планировщик ищет автоплатежи, у которых наступила дата
+  # Как часто планировщик ищет, что пора провести
   interval: ${AUTOPAY_INTERVAL:30s}
   # Пауза после старта: даём соседним сервисам подняться
   initial-delay: 10s
-  # День автоплатежа считаем по московскому времени
+  # Сколько записей под забирает за проход, сколько проводит одновременно и на сколько бронирует их за собой.
+  # Не довёл (сосед недоступен) — запись вернётся в работу, когда истечёт бронь; повтор безопасен: ключ идемпотентности тот же
+  batch-size: 50
+  parallelism: 8
+  claim-for: 2m
+  # Минимум суммы автоплатежа, пополнения и лимита в месяц, ₽
+  min-amount: 10
+  # «Каждые N дней» — не больше; первый платёж — не дальше чем через
+  max-period-days: 180
+  max-start-ahead: P1Y
+  # Длина названий — по колонкам таблиц (autopayments.name, topups.name, templates.name)
+  name-max: 60
+  template-name-max: 40
+  # Сколько последних запусков показываем в карточке
+  runs-shown: 20
+  topup:
+    # Пауза до следующей проверки баланса: после пополнения — дать балансу обновиться, после отказа — не долбить источник
+    after-success: 1m
+    after-failure: 30m
+
+# Отказоустойчивость соседей (libs/platform ResilientCalls); 4xx — ответ соседа, не сбой
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        record-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+    instances:
+      account: { base-config: default }
+      biller: { base-config: default }
+      pricing: { base-config: default }
+      payment: { base-config: default }
+  # Один повтор: дальше — следующий проход планировщика
+  retry:
+    configs:
+      default:
+        max-attempts: 2
+        wait-duration: 200ms
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+      connect-only:
+        max-attempts: 2
+        wait-duration: 200ms
+        retry-exception-predicate: com.paymentsapp.platform.resilience.ConnectFailure
+    instances:
+      account: { base-config: default }
+      biller: { base-config: default }
+      pricing: { base-config: default }
+      payment-connect-only: { base-config: connect-only }
+  bulkhead:
+    configs:
+      default:
+        max-concurrent-calls: 20
+        max-wait-duration: 500ms
+    instances:
+      account: { base-config: default }
+      biller: { base-config: default }
+      pricing: { base-config: default }
+      payment: { base-config: default }
 
 # Общая библиотека libs/platform
 platform:
+  # День автоплатежа и месяц лимита считаем по московскому времени
   time:
     zone: Europe/Moscow

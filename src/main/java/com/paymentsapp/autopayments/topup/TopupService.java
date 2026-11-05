@@ -1,31 +1,52 @@
 package com.paymentsapp.autopayments.topup;
 
-import com.paymentsapp.autopayments.autopay.Schedule;
-import com.paymentsapp.autopayments.client.Clients;
-import com.paymentsapp.autopayments.web.ApiException;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.DESTINATION_INVALID;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.MONTHLY_LIMIT_BELOW_AMOUNT;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.MONTHLY_LIMIT_MIN;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.SAME_ACCOUNTS;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.SBP_BANK_REQUIRED;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.STATUS_INVALID;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.TARGET_BALANCE_MIN;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.THRESHOLD_REQUIRED;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.TOPUP_AMOUNT_MIN;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.TOPUP_KIND_REQUIRED;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.TOPUP_SOURCE_INVALID;
+
+import com.paymentsapp.autopayments.autopay.ScheduleRules;
+import com.paymentsapp.autopayments.client.Account;
+import com.paymentsapp.autopayments.client.AccountClient;
+import com.paymentsapp.autopayments.client.PricingClient;
+import com.paymentsapp.autopayments.common.Status;
+import com.paymentsapp.autopayments.config.AutopayProperties;
+import com.paymentsapp.autopayments.error.AutopaymentsError;
+import com.paymentsapp.autopayments.topup.TopupRepository.NewTopup;
+import com.paymentsapp.platform.error.DomainException;
+import com.paymentsapp.platform.text.Rubles;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 @Service
 public class TopupService {
 
-    private static final BigDecimal MIN = BigDecimal.TEN;
-
-    private final JdbcClient jdbc;
-    private final Clients clients;
     private final TopupRepository repo;
+    private final AccountClient accounts;
+    private final PricingClient pricing;
+    private final ScheduleRules schedules;
+    private final AutopayProperties props;
     private final Clock clock;
 
-    public TopupService(JdbcClient jdbc, Clients clients, TopupRepository repo, Clock clock) {
-        this.jdbc = jdbc;
-        this.clients = clients;
+    public TopupService(TopupRepository repo, AccountClient accounts, PricingClient pricing, ScheduleRules schedules,
+                        AutopayProperties props, Clock clock) {
         this.repo = repo;
+        this.accounts = accounts;
+        this.pricing = pricing;
+        this.schedules = schedules;
+        this.props = props;
         this.clock = clock;
     }
 
@@ -39,105 +60,100 @@ public class TopupService {
     }
 
     public Topup create(UUID userId, Request req) {
-        List<Clients.Account> own = clients.accounts(userId);
-        Clients.Account destination = own.stream().filter(a -> a.id().equals(req.destinationAccountId()) && a.usable())
-                .findFirst().orElseThrow(() -> ApiException.badRequest("Выберите, куда переводить: кошелёк или карту нашего банка"));
+        List<Account> own = accounts.accounts(userId);
+        Account destination = own.stream().filter(a -> a.id().equals(req.destinationAccountId()) && a.usable())
+                .findFirst().orElseThrow(() -> new DomainException(DESTINATION_INVALID));
 
         // Откуда: свой кошелёк / карта или свой счёт в другом банке по СБП
-        Clients.Account source;
+        SourceKind sourceKind = req.sourceKind() == null ? SourceKind.OWN : req.sourceKind();
+        Account source;
         String bankId = null;
-        if ("SBP".equals(req.sourceKind())) {
+        if (sourceKind == SourceKind.SBP) {
             if (req.sourceBankId() == null || req.sourceBankName() == null) {
-                throw ApiException.badRequest("Выберите банк, из которого пополнять");
+                throw new DomainException(SBP_BANK_REQUIRED);
             }
-            source = clients.sbpSource(userId, req.sourceBankId(), req.sourceBankName());
+            source = accounts.sbpSource(userId, req.sourceBankId(), req.sourceBankName());
             bankId = req.sourceBankId();
         } else {
             source = own.stream().filter(a -> a.id().equals(req.sourceAccountId()) && a.usable()).findFirst()
-                    .orElseThrow(() -> ApiException.badRequest("Выберите, откуда списать"));
+                    .orElseThrow(() -> new DomainException(TOPUP_SOURCE_INVALID));
         }
         if (source.id().equals(destination.id())) {
-            throw ApiException.badRequest("Счёт списания и счёт зачисления должны отличаться");
+            throw new DomainException(SAME_ACCOUNTS);
+        }
+        if (req.kind() == null) {
+            throw new DomainException(TOPUP_KIND_REQUIRED);
         }
 
         LocalDate today = LocalDate.now(clock);
         LocalDate nextRun = null;
-        switch (req.kind() == null ? "" : req.kind()) {
-            case "MONTHLY" -> {
-                atLeast(req.amount(), "Сумма пополнения — от 10 ₽");
-                nextRun = Schedule.of("MONTHLY", req.dayOfMonth(), null, null, today).nextOnOrAfter(today);
+        switch (req.kind()) {
+            case MONTHLY -> {
+                atLeast(req.amount(), TOPUP_AMOUNT_MIN);
+                nextRun = schedules.monthly(req.dayOfMonth(), today).nextOnOrAfter(today);
             }
-            case "BY_BALANCE" -> {
-                atLeast(req.amount(), "Сумма пополнения — от 10 ₽");
+            case BY_BALANCE -> {
+                atLeast(req.amount(), TOPUP_AMOUNT_MIN);
                 if (req.threshold() == null || req.threshold().signum() < 0) {
-                    throw ApiException.badRequest("Укажите баланс, при котором пополнять");
+                    throw new DomainException(THRESHOLD_REQUIRED);
                 }
             }
-            case "CONSTANT_BALANCE" -> atLeast(req.targetBalance(), "Баланс, который поддерживать, — от 10 ₽");
-            default -> throw ApiException.badRequest("Выберите тип автопополнения");
+            case CONSTANT_BALANCE -> atLeast(req.targetBalance(), TARGET_BALANCE_MIN);
         }
+        boolean monthly = req.kind() == TopupKind.MONTHLY;
+        boolean constant = req.kind() == TopupKind.CONSTANT_BALANCE;
         if (req.monthlyLimit() != null) {
-            atLeast(req.monthlyLimit(), "Лимит в месяц — от 10 ₽");
-            if (req.amount() != null && !"CONSTANT_BALANCE".equals(req.kind()) && req.monthlyLimit().compareTo(req.amount()) < 0) {
-                throw ApiException.badRequest("Лимит в месяц не может быть меньше суммы пополнения");
+            atLeast(req.monthlyLimit(), MONTHLY_LIMIT_MIN);
+            if (req.amount() != null && !constant && req.monthlyLimit().compareTo(req.amount()) < 0) {
+                throw new DomainException(MONTHLY_LIMIT_BELOW_AMOUNT);
             }
         }
         // Есть ли тариф на такое пополнение (например, с карты другого банка — свой)
         BigDecimal probe = req.amount() != null ? req.amount() : req.targetBalance();
-        clients.quoteOwn(userId, source.id(), destination.id(), probe);
+        pricing.ownTransferQuote(userId, source.id(), destination.id(), probe);
 
         String name = req.name() == null || req.name().isBlank() ? destination.displayTitle() : req.name().trim();
         UUID id = UUID.randomUUID();
-        jdbc.sql("""
-                        insert into topups (id, user_id, name, source_kind, source_account_id, source_title, source_bank_id,
-                            destination_account_id, destination_title, kind, day_of_month, amount, threshold, target_balance,
-                            monthly_limit, next_run_date, next_check_at)
-                        values (:id, :user, :name, :skind, :source, :stitle, :bank, :dest, :dtitle, :kind, :day, :amount,
-                            :threshold, :target, :limit, :next, :check)
-                        """)
-                .param("id", id).param("user", userId).param("name", name.length() > 60 ? name.substring(0, 60) : name)
-                .param("skind", "SBP".equals(req.sourceKind()) ? "SBP" : "OWN").param("source", source.id())
-                .param("stitle", source.displayTitle()).param("bank", bankId).param("dest", destination.id())
-                .param("dtitle", destination.displayTitle()).param("kind", req.kind())
-                .param("day", "MONTHLY".equals(req.kind()) ? req.dayOfMonth() : null)
-                .param("amount", "CONSTANT_BALANCE".equals(req.kind()) ? null : req.amount())
-                .param("threshold", "BY_BALANCE".equals(req.kind()) ? req.threshold() : null)
-                .param("target", "CONSTANT_BALANCE".equals(req.kind()) ? req.targetBalance() : null)
-                .param("limit", "MONTHLY".equals(req.kind()) ? null : req.monthlyLimit())
-                .param("next", nextRun).param("check", "MONTHLY".equals(req.kind()) ? null : OffsetDateTime.now())
-                .update();
+        repo.insert(new NewTopup(id, userId, cut(name), sourceKind, source.id(), source.displayTitle(), bankId,
+                destination.id(), destination.displayTitle(), req.kind(), monthly ? req.dayOfMonth() : null,
+                constant ? null : req.amount(), req.kind() == TopupKind.BY_BALANCE ? req.threshold() : null,
+                constant ? req.targetBalance() : null, monthly ? null : req.monthlyLimit(), nextRun,
+                monthly ? null : OffsetDateTime.now(clock)));
         return repo.get(userId, id);
     }
 
-    public Topup setStatus(UUID userId, UUID id, String status) {
+    public Topup setStatus(UUID userId, UUID id, Status status) {
+        if (status == null) {
+            throw new DomainException(STATUS_INVALID);
+        }
         Topup t = repo.get(userId, id);
-        if (!"ACTIVE".equals(status) && !"PAUSED".equals(status)) {
-            throw ApiException.badRequest("Статус — ACTIVE или PAUSED");
-        }
         LocalDate today = LocalDate.now(clock);
+        boolean monthly = t.kind() == TopupKind.MONTHLY;
         LocalDate next = t.nextRunDate();
-        if ("ACTIVE".equals(status) && "MONTHLY".equals(t.kind()) && next.isBefore(today)) {
-            next = Schedule.of("MONTHLY", t.dayOfMonth(), null, null, today).nextOnOrAfter(today);
+        if (status == Status.ACTIVE && monthly && next.isBefore(today)) {
+            next = schedules.monthly(t.dayOfMonth(), today).nextOnOrAfter(today);
         }
-        jdbc.sql("update topups set status = :status, next_run_date = :next, next_check_at = :check, updated_at = now() where id = :id")
-                .param("id", id).param("status", status).param("next", next)
-                .param("check", "MONTHLY".equals(t.kind()) ? null : OffsetDateTime.now()).update();
+        repo.setStatus(id, status, next, monthly ? null : OffsetDateTime.now(clock));
         return repo.get(userId, id);
     }
 
     public void delete(UUID userId, UUID id) {
         repo.get(userId, id);
-        jdbc.sql("delete from topups where id = :id").param("id", id).update();
+        repo.delete(id);
     }
 
-    private static void atLeast(BigDecimal v, String message) {
-        if (v == null || v.compareTo(MIN) < 0) {
-            throw ApiException.badRequest(message);
+    private void atLeast(BigDecimal value, AutopaymentsError error) {
+        if (value == null || value.compareTo(props.minAmount()) < 0) {
+            throw new DomainException(error, Rubles.format(props.minAmount()));
         }
     }
 
-    public record Request(String name, String sourceKind, UUID sourceAccountId, String sourceBankId, String sourceBankName,
-                          UUID destinationAccountId, String kind, Integer dayOfMonth, BigDecimal amount, BigDecimal threshold,
-                          BigDecimal targetBalance, BigDecimal monthlyLimit) {
+    private String cut(String name) {
+        return name.length() > props.nameMax() ? name.substring(0, props.nameMax()) : name;
+    }
+
+    public record Request(String name, SourceKind sourceKind, UUID sourceAccountId, String sourceBankId, String sourceBankName,
+                          UUID destinationAccountId, TopupKind kind, Integer dayOfMonth, BigDecimal amount,
+                          BigDecimal threshold, BigDecimal targetBalance, BigDecimal monthlyLimit) {
     }
 }

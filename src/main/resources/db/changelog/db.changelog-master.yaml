@@ -8,3 +8,6 @@ databaseChangeLog:
   - include:
       file: changes/003-full-name.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/004-claims.sql
+      relativeToChangelogFile: true

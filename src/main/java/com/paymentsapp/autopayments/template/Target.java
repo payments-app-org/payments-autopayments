@@ -1,9 +1,15 @@
 package com.paymentsapp.autopayments.template;
 
-import com.paymentsapp.autopayments.client.Clients;
-import com.paymentsapp.autopayments.client.Clients.BillCheck;
-import com.paymentsapp.autopayments.client.Clients.Provider;
-import com.paymentsapp.autopayments.web.ApiException;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.AMOUNT_REQUIRED;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.PROVIDER_REQUIRED;
+import static com.paymentsapp.autopayments.error.AutopaymentsError.SOURCE_ACCOUNT_INVALID;
+
+import com.paymentsapp.autopayments.client.Account;
+import com.paymentsapp.autopayments.client.AccountClient;
+import com.paymentsapp.autopayments.client.BillCheck;
+import com.paymentsapp.autopayments.client.BillerClient;
+import com.paymentsapp.autopayments.client.Provider;
+import com.paymentsapp.platform.error.DomainException;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,33 +22,38 @@ import org.springframework.stereotype.Component;
 @Component
 public class Target {
 
-    private final Clients clients;
+    // E-mail для чека — не то, кому платим: в списке показываем первое другое поле (телефон, номер карты, счёта)
+    private static final String RECEIPT_EMAIL_FIELD = "email";
 
-    public Target(Clients clients) {
-        this.clients = clients;
+    private final AccountClient accounts;
+    private final BillerClient biller;
+
+    public Target(AccountClient accounts, BillerClient biller) {
+        this.accounts = accounts;
+        this.biller = biller;
     }
 
-    public Checked check(UUID userId, String providerCode, Map<String, String> fields, BigDecimal amount, List<UUID> accounts) {
+    public Checked check(UUID userId, String providerCode, Map<String, String> fields, BigDecimal amount,
+                         List<UUID> sourceAccounts) {
         if (providerCode == null || providerCode.isBlank()) {
-            throw ApiException.badRequest("Не выбран поставщик");
+            throw new DomainException(PROVIDER_REQUIRED);
         }
         if (amount == null || amount.signum() <= 0) {
-            throw ApiException.badRequest("Укажите сумму платежа");
+            throw new DomainException(AMOUNT_REQUIRED);
         }
-        List<Clients.Account> own = clients.accounts(userId);
-        for (UUID id : accounts) {
-            if (id != null && own.stream().noneMatch(a -> a.id().equals(id) && a.usable())) {
-                throw ApiException.badRequest("Счёт списания не найден — выберите кошелёк или карту нашего банка");
+        List<Account> own = accounts.accounts(userId);
+        for (UUID id : sourceAccounts) {
+            if (id == null || own.stream().noneMatch(a -> a.id().equals(id) && a.usable())) {
+                throw new DomainException(SOURCE_ACCOUNT_INVALID);
             }
         }
-        BillCheck bill = clients.checkBill(providerCode, fields == null ? Map.of() : fields, amount);
-        Provider p = clients.provider(providerCode);
+        BillCheck bill = biller.check(providerCode, fields == null ? Map.of() : fields, amount);
+        Provider provider = biller.provider(providerCode);
         Map<String, String> values = new LinkedHashMap<>();
         bill.fields().forEach(f -> values.put(f.key(), f.value()));
-        // Главное, что видно в списке: номер телефона, карты, счёта
-        String target = bill.fields().stream().filter(f -> !f.key().equals("email")).map(Clients.BillField::display)
-                .findFirst().orElse(null);
-        return new Checked(p, values, target);
+        String target = bill.fields().stream().filter(f -> !RECEIPT_EMAIL_FIELD.equals(f.key()))
+                .map(BillCheck.Field::display).findFirst().orElse(null);
+        return new Checked(provider, values, target);
     }
 
     public record Checked(Provider provider, Map<String, String> fields, String target) {

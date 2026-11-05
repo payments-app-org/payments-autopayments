@@ -27,27 +27,27 @@ public class TemplateController {
     }
 
     @GetMapping
-    public List<Template> list(@RequestHeader("X-User-Id") UUID userId) {
+    public List<Template> list(@RequestHeader(Headers.USER_ID) UUID userId) {
         return templates.list(userId);
     }
 
     @GetMapping("/{id}")
-    public Template get(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id) {
+    public Template get(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id) {
         return templates.get(userId, id);
     }
 
     @PostMapping
-    public Template create(@RequestHeader("X-User-Id") UUID userId, @RequestBody TemplateService.Request req) {
+    public Template create(@RequestHeader(Headers.USER_ID) UUID userId, @RequestBody TemplateService.Request req) {
         return templates.create(userId, req);
     }
 
     @PutMapping("/{id}")
-    public Template update(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id, @RequestBody TemplateService.Request req) {
+    public Template update(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @RequestBody TemplateService.Request req) {
         return templates.update(userId, id, req);
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id) {
+    public ResponseEntity<Void> delete(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id) {
         templates.delete(userId, id);
         return ResponseEntity.noContent().build();
     }

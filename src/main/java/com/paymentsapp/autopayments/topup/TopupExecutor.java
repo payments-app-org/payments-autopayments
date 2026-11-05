@@ -1,15 +1,22 @@
 package com.paymentsapp.autopayments.topup;
 
 import com.paymentsapp.autopayments.autopay.Schedule;
-import com.paymentsapp.autopayments.client.Clients;
-import com.paymentsapp.autopayments.client.Clients.PaymentResult;
+import com.paymentsapp.autopayments.client.Account;
+import com.paymentsapp.autopayments.client.AccountClient;
+import com.paymentsapp.autopayments.client.PaymentClient;
+import com.paymentsapp.autopayments.client.PaymentOutcome;
+import com.paymentsapp.autopayments.client.PricingClient;
+import com.paymentsapp.autopayments.common.RunMessage;
+import com.paymentsapp.autopayments.common.RunStatus;
+import com.paymentsapp.autopayments.common.Status;
+import com.paymentsapp.autopayments.config.AutopayProperties;
 import com.paymentsapp.autopayments.topup.Topup.Run;
-import com.paymentsapp.autopayments.web.ApiException;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import com.paymentsapp.autopayments.topup.TopupPlan.Decision;
+import com.paymentsapp.platform.error.DomainException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -21,80 +28,74 @@ import org.springframework.web.client.RestClientException;
 public class TopupExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(TopupExecutor.class);
-    private static final BigDecimal MIN = BigDecimal.TEN;
-    // После пополнения даём балансу обновиться, после отказа — не долбим источник каждые полминуты
-    private static final Duration AFTER_SUCCESS = Duration.ofMinutes(1);
-    private static final Duration AFTER_FAILURE = Duration.ofMinutes(30);
+    // Ключ запуска: m:<дата> — раз в месяц, b:<момент> — по балансу; ключ идемпотентности платежа — topup:<запуск>
+    private static final String MONTHLY_TRIGGER = "m:";
+    private static final String BALANCE_TRIGGER = "b:";
+    private static final String KEY_PREFIX = "topup:";
 
     private final TopupRepository repo;
-    private final Clients clients;
+    private final AccountClient accounts;
+    private final PricingClient pricing;
+    private final PaymentClient payments;
+    private final AutopayProperties props;
 
-    public TopupExecutor(TopupRepository repo, Clients clients) {
+    public TopupExecutor(TopupRepository repo, AccountClient accounts, PricingClient pricing, PaymentClient payments,
+                         AutopayProperties props) {
         this.repo = repo;
-        this.clients = clients;
+        this.accounts = accounts;
+        this.pricing = pricing;
+        this.payments = payments;
+        this.props = props;
     }
 
-    public void run(java.util.UUID topupId, LocalDate today, OffsetDateTime now) {
+    public void run(UUID topupId, LocalDate today, OffsetDateTime now) {
         Topup t = repo.get(topupId).orElse(null);
-        if (t == null || !"ACTIVE".equals(t.status())) {
+        if (t == null || t.status() != Status.ACTIVE) {
             return;
         }
         try {
-            if ("MONTHLY".equals(t.kind())) {
-                if (t.nextRunDate().isAfter(today)) {
-                    return;
-                }
-                Run run = repo.claim(t.id(), "m:" + t.nextRunDate(), t.amount(), null);
-                LocalDate next = new Schedule("MONTHLY", t.dayOfMonth(), null, today).after(t.nextRunDate());
-                if (!"PENDING".equals(run.status())) {
-                    repo.finish(t, run, run.status(), run.paymentId(), run.commission(), run.message(), next, null);
-                    return;
-                }
-                execute(t, run, next, null);
-                return;
+            if (t.kind() == TopupKind.MONTHLY) {
+                runMonthly(t, today);
+            } else {
+                runByBalance(t, now);
             }
-            // По балансу: сначала доводим незавершённый запуск, потом смотрим баланс
-            Run pending = repo.pending(t.id()).orElse(null);
-            if (pending != null) {
-                execute(t, pending, null, now);
-                return;
-            }
-            Clients.Account dest = clients.accounts(t.userId()).stream().filter(a -> a.id().equals(t.destinationAccountId()))
-                    .findFirst().orElse(null);
-            if (dest == null || dest.available() == null) {
-                repo.postponeCheck(t.id(), now.plus(AFTER_FAILURE));
-                return;
-            }
-            BigDecimal balance = dest.available();
-            BigDecimal amount = null;
-            if ("BY_BALANCE".equals(t.kind()) && balance.compareTo(t.threshold()) <= 0) {
-                amount = t.amount();
-            } else if ("CONSTANT_BALANCE".equals(t.kind()) && balance.compareTo(t.targetBalance()) < 0) {
-                amount = t.targetBalance().subtract(balance).setScale(2, RoundingMode.HALF_UP);
-            }
-            if (amount == null) {
-                repo.postponeCheck(t.id(), now);
-                return;
-            }
-            // Лимит месяца: по балансу — не пополняем, если сумма не влезает; постоянный баланс — пополняем на остаток
-            if (t.monthlyLimit() != null) {
-                BigDecimal left = t.monthlyLimit().subtract(t.monthUsed());
-                if ("CONSTANT_BALANCE".equals(t.kind()) && amount.compareTo(left) > 0) {
-                    amount = left;
-                }
-                if (amount.compareTo(left) > 0 || left.compareTo(MIN) < 0) {
-                    repo.postponeCheck(t.id(), now.plus(AFTER_FAILURE));
-                    return;
-                }
-            }
-            if (amount.compareTo(MIN) < 0) {
-                repo.postponeCheck(t.id(), now);
-                return;
-            }
-            Run run = repo.claim(t.id(), "b:" + now.toInstant().toEpochMilli(), amount, balance);
-            execute(t, run, null, now);
         } catch (RestClientException e) {
             log.warn("автопополнение {}: сервис недоступен, повторим позже: {}", t.id(), e.getMessage());
+        }
+    }
+
+    private void runMonthly(Topup t, LocalDate today) {
+        if (t.nextRunDate().isAfter(today)) {
+            return;
+        }
+        Run run = repo.claim(t.id(), MONTHLY_TRIGGER + t.nextRunDate(), t.amount(), null);
+        LocalDate next = Schedule.monthly(t.dayOfMonth(), today).after(t.nextRunDate());
+        if (run.status() != RunStatus.PENDING) {
+            repo.finish(t, run, run.status(), run.paymentId(), run.commission(), run.message(), next, null);
+            return;
+        }
+        execute(t, run, next, null);
+    }
+
+    // Сначала доводим незавершённый запуск, потом смотрим баланс
+    private void runByBalance(Topup t, OffsetDateTime now) {
+        Run pending = repo.pending(t.id()).orElse(null);
+        if (pending != null) {
+            execute(t, pending, null, now);
+            return;
+        }
+        Account destination = accounts.accounts(t.userId()).stream()
+                .filter(a -> a.id().equals(t.destinationAccountId())).findFirst().orElse(null);
+        if (destination == null || destination.available() == null) {
+            repo.postponeCheck(t.id(), now.plus(props.topup().afterFailure()));
+            return;
+        }
+        Decision decision = TopupPlan.decide(t, destination.available(), props.minAmount());
+        switch (decision.action()) {
+            case CHECK_NEXT_TICK -> repo.postponeCheck(t.id(), now);
+            case LIMIT_REACHED -> repo.postponeCheck(t.id(), now.plus(props.topup().afterFailure()));
+            case TOP_UP -> execute(t, repo.claim(t.id(), BALANCE_TRIGGER + now.toInstant().toEpochMilli(),
+                    decision.amount(), destination.available()), null, now);
         }
     }
 
@@ -102,19 +103,33 @@ public class TopupExecutor {
         String token = repo.quoteToken(run.id()).orElse(null);
         if (token == null) {
             try {
-                token = clients.quoteOwn(t.userId(), t.sourceAccountId(), t.destinationAccountId(), run.amount()).quoteToken();
-            } catch (ApiException e) {
-                repo.finish(t, run, "FAILED", null, null, e.getMessage(), nextRunDate, now == null ? null : now.plus(AFTER_FAILURE));
+                token = pricing.ownTransferQuote(t.userId(), t.sourceAccountId(), t.destinationAccountId(), run.amount())
+                        .quoteToken();
+            } catch (DomainException e) {
+                repo.finish(t, run, RunStatus.FAILED, null, null, e.getMessage(), nextRunDate,
+                        nextCheck(now, props.topup().afterFailure()));
                 return;
             }
             repo.saveQuote(run.id(), token);
         }
-        PaymentResult r = clients.payOwn(t.userId(), "topup:" + run.id(), t.sourceAccountId(), t.destinationAccountId(),
+        PaymentOutcome r = payments.payOwn(t.userId(), KEY_PREFIX + run.id(), t.sourceAccountId(), t.destinationAccountId(),
                 run.amount(), token);
-        String status = "SUCCESS".equals(r.status()) ? "SUCCESS"
-                : "FAILED".equals(r.status()) || "REJECTED".equals(r.status()) ? "FAILED" : "PROCESSING";
-        String message = "SUCCESS".equals(status) ? "Пополнено" : "PROCESSING".equals(status) ? "Перевод обрабатывается" : r.message();
-        OffsetDateTime nextCheck = now == null ? null : now.plus("FAILED".equals(status) ? AFTER_FAILURE : AFTER_SUCCESS);
-        repo.finish(t, run, status, r.paymentId(), r.commission(), message, nextRunDate, nextCheck);
+        RunStatus status = switch (r.result()) {
+            case SUCCESS -> RunStatus.SUCCESS;
+            case FAILED, REJECTED -> RunStatus.FAILED;
+            case IN_PROGRESS -> RunStatus.PROCESSING;
+        };
+        String message = switch (status) {
+            case SUCCESS -> RunMessage.TOPPED_UP.text();
+            case PROCESSING -> RunMessage.TRANSFER_PROCESSING.text();
+            default -> r.message();
+        };
+        Duration pause = status == RunStatus.FAILED ? props.topup().afterFailure() : props.topup().afterSuccess();
+        repo.finish(t, run, status, r.paymentId(), r.commission(), message, nextRunDate, nextCheck(now, pause));
+    }
+
+    // Раз в месяц время проверки не нужно (null), по балансу — через паузу
+    private static OffsetDateTime nextCheck(OffsetDateTime now, Duration pause) {
+        return now == null ? null : now.plus(pause);
     }
 }

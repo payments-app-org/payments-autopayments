@@ -3,7 +3,6 @@ package com.paymentsapp.autopayments.web;
 import com.paymentsapp.autopayments.topup.Topup;
 import com.paymentsapp.autopayments.topup.TopupService;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,27 +27,27 @@ public class TopupController {
     }
 
     @GetMapping
-    public List<Topup> list(@RequestHeader("X-User-Id") UUID userId) {
+    public List<Topup> list(@RequestHeader(Headers.USER_ID) UUID userId) {
         return topups.list(userId);
     }
 
     @GetMapping("/{id}")
-    public Topup.WithRuns get(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id) {
+    public Topup.WithRuns get(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id) {
         return topups.get(userId, id);
     }
 
     @PostMapping
-    public Topup create(@RequestHeader("X-User-Id") UUID userId, @RequestBody TopupService.Request req) {
+    public Topup create(@RequestHeader(Headers.USER_ID) UUID userId, @RequestBody TopupService.Request req) {
         return topups.create(userId, req);
     }
 
     @PatchMapping("/{id}")
-    public Topup status(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id, @RequestBody Map<String, String> body) {
-        return topups.setStatus(userId, id, body.get("status"));
+    public Topup status(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @RequestBody StatusRequest body) {
+        return topups.setStatus(userId, id, body.status());
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@RequestHeader("X-User-Id") UUID userId, @PathVariable UUID id) {
+    public ResponseEntity<Void> delete(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id) {
         topups.delete(userId, id);
         return ResponseEntity.noContent().build();
     }

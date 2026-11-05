@@ -2,6 +2,7 @@ package com.paymentsapp.autopayments.web;
 
 import com.paymentsapp.autopayments.template.Template;
 import com.paymentsapp.autopayments.template.TemplateService;
+import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
@@ -37,12 +38,12 @@ public class TemplateController {
     }
 
     @PostMapping
-    public Template create(@RequestHeader(Headers.USER_ID) UUID userId, @RequestBody TemplateService.Request req) {
+    public Template create(@RequestHeader(Headers.USER_ID) UUID userId, @Valid @RequestBody TemplateService.Request req) {
         return templates.create(userId, req);
     }
 
     @PutMapping("/{id}")
-    public Template update(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @RequestBody TemplateService.Request req) {
+    public Template update(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @Valid @RequestBody TemplateService.Request req) {
         return templates.update(userId, id, req);
     }
 

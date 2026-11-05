@@ -2,6 +2,7 @@ package com.paymentsapp.autopayments.web;
 
 import com.paymentsapp.autopayments.autopay.Autopayment;
 import com.paymentsapp.autopayments.autopay.AutopaymentService;
+import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
@@ -37,12 +38,12 @@ public class AutopaymentController {
     }
 
     @PostMapping
-    public Autopayment create(@RequestHeader(Headers.USER_ID) UUID userId, @RequestBody AutopaymentService.Request req) {
+    public Autopayment create(@RequestHeader(Headers.USER_ID) UUID userId, @Valid @RequestBody AutopaymentService.Request req) {
         return autopayments.create(userId, req);
     }
 
     @PatchMapping("/{id}")
-    public Autopayment status(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @RequestBody StatusRequest body) {
+    public Autopayment status(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @Valid @RequestBody StatusRequest body) {
         return autopayments.setStatus(userId, id, body.status());
     }
 

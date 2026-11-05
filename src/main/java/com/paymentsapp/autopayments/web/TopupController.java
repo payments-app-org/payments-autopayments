@@ -2,6 +2,7 @@ package com.paymentsapp.autopayments.web;
 
 import com.paymentsapp.autopayments.topup.Topup;
 import com.paymentsapp.autopayments.topup.TopupService;
+import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
@@ -37,12 +38,12 @@ public class TopupController {
     }
 
     @PostMapping
-    public Topup create(@RequestHeader(Headers.USER_ID) UUID userId, @RequestBody TopupService.Request req) {
+    public Topup create(@RequestHeader(Headers.USER_ID) UUID userId, @Valid @RequestBody TopupService.Request req) {
         return topups.create(userId, req);
     }
 
     @PatchMapping("/{id}")
-    public Topup status(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @RequestBody StatusRequest body) {
+    public Topup status(@RequestHeader(Headers.USER_ID) UUID userId, @PathVariable UUID id, @Valid @RequestBody StatusRequest body) {
         return topups.setStatus(userId, id, body.status());
     }
 

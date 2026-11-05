@@ -4,6 +4,14 @@ import static com.paymentsapp.autopayments.error.AutopaymentsError.TEMPLATE_NAME
 
 import com.paymentsapp.autopayments.config.AutopayProperties;
 import com.paymentsapp.platform.error.DomainException;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
@@ -61,6 +69,9 @@ public class TemplateService {
         return n;
     }
 
-    public record Request(String name, String providerCode, Map<String, String> fields, BigDecimal amount, UUID sourceAccountId) {
+    // Формат запроса; правила (длина названия, минимальная сумма, поля поставщика) — в create/update
+    public record Request(@Size(max = 100) String name, @NotBlank @Size(max = 40) String providerCode,
+                          @Size(max = 20) Map<String, @Size(max = 200) String> fields,
+                          @Positive @Digits(integer = 15, fraction = 2) BigDecimal amount, UUID sourceAccountId) {
     }
 }

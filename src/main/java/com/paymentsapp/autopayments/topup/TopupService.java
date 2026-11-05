@@ -22,6 +22,14 @@ import com.paymentsapp.autopayments.error.AutopaymentsError;
 import com.paymentsapp.autopayments.topup.TopupRepository.NewTopup;
 import com.paymentsapp.platform.error.DomainException;
 import com.paymentsapp.platform.text.Rubles;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -152,8 +160,13 @@ public class TopupService {
         return name.length() > props.nameMax() ? name.substring(0, props.nameMax()) : name;
     }
 
-    public record Request(String name, SourceKind sourceKind, UUID sourceAccountId, String sourceBankId, String sourceBankName,
-                          UUID destinationAccountId, TopupKind kind, Integer dayOfMonth, BigDecimal amount,
-                          BigDecimal threshold, BigDecimal targetBalance, BigDecimal monthlyLimit) {
+    // Формат запроса; правила по виду автопополнения (что обязательно, допустимые суммы) — в create (TopupPlan)
+    public record Request(@Size(max = 100) String name, @NotNull SourceKind sourceKind, UUID sourceAccountId,
+                          @Pattern(regexp = "\\d{12}", message = "идентификатор банка СБП — 12 цифр") String sourceBankId, @Size(max = 100) String sourceBankName,
+                          @NotNull UUID destinationAccountId, @NotNull TopupKind kind, @Min(1) @Max(31) Integer dayOfMonth,
+                          @Positive @Digits(integer = 15, fraction = 2) BigDecimal amount,
+                          @Positive @Digits(integer = 15, fraction = 2) BigDecimal threshold,
+                          @Positive @Digits(integer = 15, fraction = 2) BigDecimal targetBalance,
+                          @Positive @Digits(integer = 15, fraction = 2) BigDecimal monthlyLimit) {
     }
 }
